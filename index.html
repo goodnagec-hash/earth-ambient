@@ -1,0 +1,844 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#08090c">
+<meta name="color-scheme" content="dark light">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Global Sonification</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
+<script src="https://cdn.jsdelivr.net/npm/topojson-client@3/dist/topojson-client.min.js"></script>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<style>
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  :root{
+    --bg:#08090c;--fg:#e8e9ec;--muted:#8a8e99;--accent:#ff6b00;
+    --glass:rgba(16,18,24,.55);--glass-b:rgba(255,255,255,.09);
+    --btn:rgba(255,255,255,.08);--btn-on:#ff6b00;--btn-on-fg:#08090c;
+    --ok:#7dd3a0;--bad:#ff5a5a;--warn:#ffb020;
+  }
+  body.light{
+    --bg:#f4f4f6;--fg:#15161a;--muted:#6b6f7a;--accent:#111111;
+    --glass:rgba(255,255,255,.6);--glass-b:rgba(0,0,0,.08);
+    --btn:rgba(0,0,0,.06);--btn-on:#111111;--btn-on-fg:#f4f4f6;
+    --ok:#1f8a4c;--bad:#c62828;--warn:#b26a00;
+  }
+  html,body{margin:0;height:100%;overflow:hidden;background:var(--bg);color:var(--fg);
+    font:13px/1.35 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    transition:background-color .6s ease,color .6s ease}
+  #gl{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none;outline:none}
+  .glass{background:var(--glass);-webkit-backdrop-filter:blur(14px) saturate(140%);
+    backdrop-filter:blur(14px) saturate(140%);border:1px solid var(--glass-b);border-radius:16px;
+    transition:background-color .6s ease,border-color .6s ease}
+  .hud{position:fixed;z-index:2;padding:10px 12px}
+  .top{top:max(10px,env(safe-area-inset-top));left:10px;right:10px;display:flex;
+    justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
+  .brand{font-weight:600;letter-spacing:.04em;font-size:12px;text-transform:uppercase;display:flex;align-items:center;gap:8px}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--accent);box-shadow:0 0 10px var(--accent);transition:background .6s}
+  .row{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+  .bottom{left:10px;right:10px;bottom:max(10px,env(safe-area-inset-bottom));display:grid;gap:10px;
+    max-height:50vh;overflow:auto}
+  .seg{display:inline-flex;background:var(--btn);border-radius:10px;padding:2px;gap:2px;transition:background-color .6s}
+  .seg button,.btn{font:inherit;font-size:12px;color:var(--fg);background:transparent;border:0;
+    border-radius:8px;padding:6px 9px;cursor:pointer;transition:background-color .3s,color .3s}
+  .btn{background:var(--btn)}
+  .seg button.on,.btn.on{background:var(--btn-on);color:var(--btn-on-fg)}
+  .muted{color:var(--muted)}
+  .telemetry{display:grid;gap:4px;font-variant-numeric:tabular-nums}
+  .tl-row{display:flex;gap:6px;flex-wrap:wrap;align-items:baseline}
+  .tl-row b{font-weight:600}
+  #status{padding:2px 8px;border-radius:6px;background:var(--btn)}
+  #status[data-net="ONLINE"]{color:var(--ok)}
+  #status[data-net="RATE_LIMIT"]{color:var(--warn)}
+  #status[data-net="OFFLINE"]{color:var(--bad)}
+  #err{color:var(--bad);font-size:12px;word-break:break-word;min-height:0}
+  #err:empty{display:none}
+  .controls{display:grid;gap:8px}
+  .group{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .label{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);min-width:64px}
+  input[type=range]{accent-color:var(--btn-on);width:120px}
+  #bgAudio{display:none}
+  @media (max-width:480px){
+    .label{min-width:0;width:100%}
+    input[type=range]{width:100%}
+  }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<audio id="bgAudio" loop playsinline preload="auto"></audio>
+
+<header class="hud top glass">
+  <div class="brand"><span class="dot"></span><span data-i18n="title"></span></div>
+  <div class="row">
+    <div class="seg" id="langSeg">
+      <button data-lang="ru">RU</button><button data-lang="en">EN</button>
+    </div>
+    <button class="btn" id="themeBtn"></button>
+  </div>
+</header>
+
+<section class="hud bottom glass">
+  <div class="telemetry">
+    <div class="tl-row"><span class="muted" data-i18n="status"></span><b id="status">—</b></div>
+    <div class="tl-row"><span class="muted" data-i18n="tracked"></span><b id="count">0</b><span class="muted" id="drawn"></span></div>
+    <div class="tl-row"><span class="muted" data-i18n="lastResponse"></span><b id="lastTs">—</b></div>
+    <div id="err"></div>
+  </div>
+
+  <div class="controls">
+    <div class="group">
+      <span class="label" data-i18n="source"></span>
+      <div class="seg" id="srcSeg">
+        <button data-src="WORLD" data-i18n="world"></button>
+        <button data-src="TRAINS" data-i18n="trains"></button>
+      </div>
+    </div>
+    <div class="group">
+      <span class="label" data-i18n="audio"></span>
+      <button class="btn" id="audioBtn"></button>
+      <span class="label" style="min-width:0" data-i18n="volume"></span>
+      <input type="range" id="vol" min="0" max="100" value="60">
+    </div>
+    <div class="group">
+      <span class="label" data-i18n="sleep"></span>
+      <div class="seg" id="sleepSeg">
+        <button data-min="0" data-i18n="off"></button>
+        <button data-min="15" data-i18n="m15"></button>
+        <button data-min="30" data-i18n="m30"></button>
+        <button data-min="60" data-i18n="m60"></button>
+      </div>
+      <span id="sleepCd" class="muted"></span>
+    </div>
+    <div class="group">
+      <button class="btn" id="rotBtn"></button>
+      <button class="btn" id="wakeBtn"></button>
+    </div>
+  </div>
+</section>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ---------- constants ---------- */
+const WORLD_URL = 'https://opensky-network.org/api/states/all';
+const TRAINS_URL = 'https://rata.digitraffic.fi/api/v1/train-locations/latest/';
+const POLL_MS = { WORLD: 12000, TRAINS: 5000 };
+const RATE_RETRY_MS = 60000;
+const FETCH_TIMEOUT_MS = 10000;
+const MAX_OBJ = 3000;
+const TRAIL = 10;
+const MAX_EXTRAP_S = 30;
+const GLOBE_R = 1;
+const LINE_R = 1.002;
+const NOTES = [130.81, 196.00, 293.66, 329.63, 392.00, 440.00, 493.88, 587.33, 659.25]; // C3 G3 D4 E4 G4 A4 B4 D5 E5
+
+const COL = {
+  darkBg: new THREE.Color('#08090c'), lightBg: new THREE.Color('#f4f4f6'),
+  darkGlobe: new THREE.Color('#111318'), lightGlobe: new THREE.Color('#e4e5ea'),
+  darkCoast: new THREE.Color('#3a3d45'), lightCoast: new THREE.Color('#a4a8b2'),
+  darkAccent: new THREE.Color('#ff6b00'), lightAccent: new THREE.Color('#111111'),
+};
+
+const I18N = {
+  ru: {
+    title: 'Глобальная сонификация', status: 'Связь', tracked: 'Объекты', drawn: 'отрисовано',
+    lastResponse: 'Ответ', serverTime: 'сервер', errLabel: 'Ошибка', none: 'нет',
+    source: 'Источник', world: 'МИР · самолёты', trains: 'ПОЕЗДА · рельсы',
+    audio: 'Звук', volume: 'Громкость', sleep: 'Сон', off: 'Выкл',
+    m15: '15 м', m30: '30 м', m60: '60 м', sleepLeft: 'осталось', sleepDone: 'таймер завершён, опрос остановлен',
+    rotOn: 'Вращение: вкл', rotOff: 'Вращение: выкл',
+    wakeOn: 'Не гасить экран: вкл', wakeOff: 'Не гасить экран: выкл',
+    noWake: 'Блокировка экрана не поддерживается этим браузером',
+    wakeErr: 'Не удалось удержать экран',
+    audioErr: 'Не удалось запустить фоновый звук',
+    themeDark: 'Тема: тёмная', themeLight: 'Тема: светлая',
+    audioOn: 'Звук: вкл', audioOff: 'Звук: выкл',
+    mediaAlbum: 'Живая телеметрия',
+    srcWorldLabel: 'Самолёты мира', srcTrainsLabel: 'Поезда',
+    ONLINE: 'ОНЛАЙН', RATE_LIMIT: 'ЛИМИТ ЗАПРОСОВ', OFFLINE: 'ОФЛАЙН', IDLE: 'ОЖИДАНИЕ', STOPPED: 'ОСТАНОВЛЕНО',
+    mapErr: 'Карта не загружена',
+  },
+  en: {
+    title: 'Global Sonification', status: 'Link', tracked: 'Objects', drawn: 'drawn',
+    lastResponse: 'Response', serverTime: 'server', errLabel: 'Error', none: 'none',
+    source: 'Source', world: 'WORLD · aircraft', trains: 'TRAINS · rail',
+    audio: 'Sound', volume: 'Volume', sleep: 'Sleep', off: 'Off',
+    m15: '15 min', m30: '30 min', m60: '60 min', sleepLeft: 'left', sleepDone: 'timer finished, polling stopped',
+    rotOn: 'Rotation: on', rotOff: 'Rotation: off',
+    wakeOn: 'Keep screen on: on', wakeOff: 'Keep screen on: off',
+    noWake: 'Screen wake lock is not supported by this browser',
+    wakeErr: 'Could not keep the screen on',
+    audioErr: 'Could not start background audio',
+    themeDark: 'Theme: dark', themeLight: 'Theme: light',
+    audioOn: 'Sound: on', audioOff: 'Sound: off',
+    mediaAlbum: 'Live telemetry',
+    srcWorldLabel: 'World aircraft', srcTrainsLabel: 'Trains',
+    ONLINE: 'ONLINE', RATE_LIMIT: 'RATE LIMIT', OFFLINE: 'OFFLINE', IDLE: 'WAITING', STOPPED: 'STOPPED',
+    mapErr: 'Map not loaded',
+  },
+};
+
+/* ---------- state ---------- */
+const S = {
+  lang: 'ru', theme: 'dark', rot: true,
+  source: 'WORLD', gen: 0, polling: false, pollTimer: null, abort: null,
+  net: 'IDLE', err: '', count: 0, drawn: 0, lastRecv: null, serverTs: null,
+  paused: false, pausedAt: 0,
+  audioOn: false, userVol: 0.6, fading: false, sleepEnd: 0, sleepMin: 0, sleepStopped: false,
+  wake: null, wakeWanted: false, wakeOn: false,
+};
+const objects = new Map();
+
+/* ---------- DOM helpers ---------- */
+const $ = id => document.getElementById(id);
+const t = k => (I18N[S.lang][k] ?? k);
+const locale = () => (S.lang === 'ru' ? 'ru-RU' : 'en-GB');
+const fmtTime = ts => ts == null ? t('none') : new Date(ts).toLocaleTimeString(locale(), { hour12: false });
+
+/* ---------- three.js scene ---------- */
+const canvas = $('gl');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight, false);
+
+const scene = new THREE.Scene();
+scene.background = COL.darkBg.clone();
+
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.01, 100);
+camera.position.set(0, 0.4, 3.6);
+
+const controls = new OrbitControls(camera, canvas);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.enablePan = false;
+controls.minDistance = 1.5;
+controls.maxDistance = 6;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.5;
+
+const globe = new THREE.Mesh(
+  new THREE.SphereGeometry(GLOBE_R, 96, 64),
+  new THREE.MeshBasicMaterial({ color: COL.darkGlobe.clone() })
+);
+scene.add(globe);
+
+const coastMat = new THREE.LineBasicMaterial({ color: COL.darkCoast.clone() });
+let coastLines = null;
+
+// lat/lon -> 3D point (matches three.js sphere orientation)
+function ll(lon, lat, r, out, off) {
+  const phi = (90 - lat) * Math.PI / 180;
+  const th = (lon + 180) * Math.PI / 180;
+  out[off] = -r * Math.sin(phi) * Math.cos(th);
+  out[off + 1] = r * Math.cos(phi);
+  out[off + 2] = r * Math.sin(phi) * Math.sin(th);
+}
+
+function eachLine(geom, fn) {
+  if (!geom) return;
+  switch (geom.type) {
+    case 'LineString': fn(geom.coordinates); break;
+    case 'MultiLineString': case 'Polygon': geom.coordinates.forEach(fn); break;
+    case 'MultiPolygon': geom.coordinates.forEach(p => p.forEach(fn)); break;
+  }
+}
+
+async function loadMap() {
+  try {
+    const res = await fetch('https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json');
+    if (!res.ok) throw new Error(`world-atlas HTTP ${res.status}`);
+    const topo = await res.json();
+    const geom = topojson.mesh(topo, topo.objects.land);
+    const pos = [];
+    const tmp = [0, 0, 0];
+    eachLine(geom, line => {
+      for (let i = 1; i < line.length; i++) {
+        const a = line[i - 1], b = line[i];
+        ll(a[0], a[1], LINE_R, tmp, 0); pos.push(tmp[0], tmp[1], tmp[2]);
+        ll(b[0], b[1], LINE_R, tmp, 0); pos.push(tmp[0], tmp[1], tmp[2]);
+      }
+    });
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    coastLines = new THREE.LineSegments(g, coastMat);
+    scene.add(coastLines);
+  } catch (e) {
+    S.err = `${t('mapErr')}: ${e.message}`;
+    ui();
+  }
+}
+
+// trajectory buffers (pre-allocated)
+const trailPos = new Float32Array(MAX_OBJ * 2 * TRAIL * 3);
+const trailCol = new Float32Array(MAX_OBJ * 2 * TRAIL * 3);
+const trailGeo = new THREE.BufferGeometry();
+trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPos, 3));
+trailGeo.setAttribute('color', new THREE.BufferAttribute(trailCol, 3));
+const trailMat = new THREE.LineBasicMaterial({ vertexColors: true });
+scene.add(new THREE.LineSegments(trailGeo, trailMat));
+
+const headPos = new Float32Array(MAX_OBJ * 3);
+const headCol = new Float32Array(MAX_OBJ * 3);
+const headGeo = new THREE.BufferGeometry();
+headGeo.setAttribute('position', new THREE.BufferAttribute(headPos, 3));
+headGeo.setAttribute('color', new THREE.BufferAttribute(headCol, 3));
+const headMat = new THREE.PointsMaterial({ size: 4, vertexColors: true, sizeAttenuation: false });
+scene.add(new THREE.Points(headGeo, headMat));
+
+/* ---------- theme ---------- */
+let themeT = 0, themeTarget = 0;
+const accentNow = COL.darkAccent.clone();
+const tmpC = new THREE.Color();
+
+function applyThemeColors(t01) {
+  scene.background.lerpColors(COL.darkBg, COL.lightBg, t01);
+  globe.material.color.lerpColors(COL.darkGlobe, COL.lightGlobe, t01);
+  coastMat.color.lerpColors(COL.darkCoast, COL.lightCoast, t01);
+  accentNow.lerpColors(COL.darkAccent, COL.lightAccent, t01);
+}
+
+/* ---------- motion math ---------- */
+function bearing(lat1, lon1, lat2, lon2) {
+  const p1 = lat1 * Math.PI / 180, p2 = lat2 * Math.PI / 180;
+  const dl = (lon2 - lon1) * Math.PI / 180;
+  const y = Math.sin(dl) * Math.cos(p2);
+  const x = Math.cos(p1) * Math.sin(p2) - Math.sin(p1) * Math.cos(p2) * Math.cos(dl);
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+}
+
+// dead reckoning from last real anchor along reported heading and speed (m/s)
+function project(o, tNow) {
+  const dt = Math.min(Math.max((tNow - o.anchorT) / 1000, 0), MAX_EXTRAP_S);
+  if (o.track == null || o.v == null || o.v <= 0 || dt === 0) return [o.lat, o.lon];
+  const th = o.track * Math.PI / 180;
+  const dN = o.v * Math.cos(th) * dt;
+  const dE = o.v * Math.sin(th) * dt;
+  const lat = Math.max(-89, Math.min(89, o.lat + dN / 111320));
+  const lon = o.lon + dE / (111320 * Math.max(Math.cos(o.lat * Math.PI / 180), 0.05));
+  return [lat, lon];
+}
+
+function updateTrajectories(tNow) {
+  let vi = 0, drawn = 0;
+  for (const o of objects.values()) {
+    if (drawn >= MAX_OBJ) break;
+    drawn++;
+    const p = project(o, tNow);
+    const p0 = p[0], p1 = p[1];
+    const r = 1.004 + o.altN * 0.06;
+    const H = o.hist.length;
+    const n = H + 1;
+    for (let k = 0; k < n - 1; k++) {
+      const la = k < H ? o.hist[k].lat : p0, lo = k < H ? o.hist[k].lon : p1;
+      const kb = k + 1;
+      const lb = kb < H ? o.hist[kb].lat : p0, lob = kb < H ? o.hist[kb].lon : p1;
+      const fa = k / (n - 1), fb = kb / (n - 1);
+
+      ll(lo, la, r, trailPos, vi * 3);
+      tmpC.copy(scene.background).lerp(accentNow, fa);
+      trailCol[vi * 3] = tmpC.r; trailCol[vi * 3 + 1] = tmpC.g; trailCol[vi * 3 + 2] = tmpC.b;
+      vi++;
+
+      ll(lob, lb, r, trailPos, vi * 3);
+      tmpC.copy(scene.background).lerp(accentNow, fb);
+      trailCol[vi * 3] = tmpC.r; trailCol[vi * 3 + 1] = tmpC.g; trailCol[vi * 3 + 2] = tmpC.b;
+      vi++;
+    }
+    ll(p1, p0, r, headPos, (drawn - 1) * 3);
+    headCol[(drawn - 1) * 3] = accentNow.r;
+    headCol[(drawn - 1) * 3 + 1] = accentNow.g;
+    headCol[(drawn - 1) * 3 + 2] = accentNow.b;
+  }
+  trailGeo.setDrawRange(0, vi);
+  trailGeo.attributes.position.needsUpdate = true;
+  trailGeo.attributes.color.needsUpdate = true;
+  headGeo.setDrawRange(0, drawn);
+  headGeo.attributes.position.needsUpdate = true;
+  headGeo.attributes.color.needsUpdate = true;
+  S.drawn = drawn;
+}
+
+/* ---------- render loop ---------- */
+function frame() {
+  requestAnimationFrame(frame);
+  themeT += (themeTarget - themeT) * 0.06;
+  if (Math.abs(themeT - themeTarget) < 0.001) themeT = themeTarget;
+  applyThemeColors(themeT);
+  controls.autoRotate = S.rot;
+  controls.update();
+  const tNow = S.paused ? S.pausedAt : performance.now();
+  updateTrajectories(tNow);
+  renderer.render(scene, camera);
+}
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight, false);
+});
+
+/* ---------- data parsing (real responses only) ---------- */
+function parseWorld(json) {
+  const list = [];
+  for (const s of (json.states || [])) {
+    const lon = s[5], lat = s[6];
+    if (typeof lat !== 'number' || typeof lon !== 'number') continue;
+    list.push({
+      id: 'a:' + s[0], lat, lon,
+      alt: s[7] ?? s[13] ?? 0,
+      v: typeof s[9] === 'number' ? s[9] : null,
+      track: typeof s[10] === 'number' ? s[10] : null,
+    });
+  }
+  return { list, serverTs: typeof json.time === 'number' ? json.time * 1000 : null };
+}
+
+function parseTrains(json) {
+  const list = [];
+  let latest = null;
+  const arr = Array.isArray(json)
+    ? json
+    : (json.trainLocations ?? (json.features ?? []).map(f => ({ ...(f.properties || {}), location: { coordinates: f.geometry?.coordinates } })));
+  const flat = [];
+  for (const item of arr) {
+    if (item && Array.isArray(item.trainLocations)) flat.push(...item.trainLocations);
+    else if (item) flat.push(item);
+  }
+  for (const tl of flat) {
+    const c = tl.location?.coordinates;
+    if (!c) continue;
+    const lon = c[0], lat = c[1];
+    if (typeof lat !== 'number' || typeof lon !== 'number') continue;
+    list.push({
+      id: 't:' + tl.trainNumber + ':' + tl.departureDate,
+      lat, lon, alt: 0,
+      v: typeof tl.speed === 'number' ? tl.speed / 3.6 : 0,
+      track: null,
+    });
+    const ts = tl.timestamp ? Date.parse(tl.timestamp) : NaN;
+    if (!Number.isNaN(ts) && (latest == null || ts > latest)) latest = ts;
+  }
+  return { list, serverTs: latest };
+}
+
+/* ---------- object ingestion ---------- */
+function ingest(list, src) {
+  const now = performance.now();
+  const seen = new Set();
+  let spdSum = 0, spdN = 0, altSum = 0, altN = 0, shiftSum = 0, shiftN = 0;
+  const ref = src === 'WORLD' ? 280 : 44.4; // m/s normalisation (aircraft / 160 km/h trains)
+
+  for (const r of list) {
+    if (seen.has(r.id)) continue;
+    seen.add(r.id);
+    const altNorm = src === 'WORLD' ? Math.min(Math.max(r.alt, 0), 12000) / 12000 : 0;
+    let o = objects.get(r.id);
+    if (!o) {
+      o = { id: r.id, lat: r.lat, lon: r.lon, v: r.v, track: r.track, alt: r.alt, altN: altNorm, anchorT: now, hist: [] };
+      objects.set(r.id, o);
+    } else {
+      const moved = Math.abs(r.lat - o.lat) + Math.abs(r.lon - o.lon);
+      shiftSum += moved; shiftN++;
+      o.hist.push({ lat: o.lat, lon: o.lon });
+      if (o.hist.length > TRAIL) o.hist.shift();
+      o.track = r.track != null ? r.track : (moved > 1e-6 ? bearing(o.lat, o.lon, r.lat, r.lon) : o.track);
+      o.lat = r.lat; o.lon = r.lon; o.v = r.v; o.alt = r.alt; o.altN = altNorm; o.anchorT = now;
+    }
+    if (r.v != null) { spdSum += Math.min(r.v / ref, 1); spdN++; }
+    if (src === 'WORLD') { altSum += altNorm; altN++; }
+  }
+  for (const id of [...objects.keys()]) if (!seen.has(id)) objects.delete(id);
+
+  return {
+    n: list.length,
+    spd: spdN ? spdSum / spdN : 0,
+    alt: altN ? altSum / altN : 0,
+    shift: shiftN ? Math.min((shiftSum / shiftN) / 0.05, 1) : 0,
+  };
+}
+
+/* ---------- network status ---------- */
+function freezeMotion() {
+  if (!S.paused) { S.paused = true; S.pausedAt = performance.now(); }
+  silenceAudio();
+}
+
+async function poll() {
+  if (!S.polling) return;
+  const gen = S.gen;
+  const src = S.source;
+  const ctrl = new AbortController();
+  S.abort = ctrl;
+  const to = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+  let next = POLL_MS[src];
+  try {
+    const res = await fetch(src === 'WORLD' ? WORLD_URL : TRAINS_URL, { signal: ctrl.signal, cache: 'no-store' });
+    if (!res.ok) {
+      const e = new Error(`HTTP ${res.status}${res.statusText ? ' ' + res.statusText : ''}`);
+      e.status = res.status;
+      throw e;
+    }
+    const json = await res.json();
+    if (gen !== S.gen) return;
+    const parsed = src === 'WORLD' ? parseWorld(json) : parseTrains(json);
+    const st = ingest(parsed.list, src);
+    S.count = parsed.list.length;
+    S.serverTs = parsed.serverTs;
+    S.lastRecv = Date.now();
+    S.paused = false;
+    S.err = '';
+    S.net = 'ONLINE';
+    sonify(st, src);
+  } catch (e) {
+    if (gen !== S.gen) return;
+    freezeMotion();
+    S.err = e.message || String(e);
+    S.net = e.status === 429 ? 'RATE_LIMIT' : 'OFFLINE';
+    if (e.status === 429) next = RATE_RETRY_MS;
+  } finally {
+    clearTimeout(to);
+  }
+  if (gen === S.gen && S.polling) S.pollTimer = setTimeout(poll, next);
+  ui();
+}
+
+function switchSource(src) {
+  if (src === S.source && S.polling) return;
+  S.source = src;
+  S.gen++;
+  clearTimeout(S.pollTimer);
+  if (S.abort) S.abort.abort();
+  objects.clear();
+  S.count = 0; S.drawn = 0; S.lastRecv = null; S.serverTs = null; S.err = '';
+  S.paused = false;
+  S.polling = true;
+  S.sleepStopped = false;
+  S.net = 'IDLE';
+  updateMediaMeta();
+  ui();
+  poll();
+}
+
+/* ---------- Web Audio synth (routed to a MediaStream for background playback) ---------- */
+let ac = null, master = null, voiceBus = null, msd = null;
+const bgEl = $('bgAudio');
+
+function makeImpulse(ctx, seconds, decay) {
+  const rate = ctx.sampleRate, len = Math.floor(rate * seconds);
+  const buf = ctx.createBuffer(2, len, rate);
+  let seed = 1337; // deterministic noise for reverb tail
+  const rnd = () => {
+    seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5;
+    return ((seed >>> 0) / 4294967296) * 2 - 1;
+  };
+  for (let ch = 0; ch < 2; ch++) {
+    const d = buf.getChannelData(ch);
+    for (let i = 0; i < len; i++) d[i] = rnd() * Math.pow(1 - i / len, decay);
+  }
+  return buf;
+}
+
+function ensureAudio() {
+  if (ac) return;
+  ac = new (window.AudioContext || window.webkitAudioContext)();
+
+  // Final master -> MediaStreamDestination -> hidden <audio loop>.
+  // Routing through a media element keeps Android Chrome / Samsung Internet
+  // from suspending playback when the screen locks.
+  master = ac.createGain();
+  master.gain.value = 0;
+  msd = ac.createMediaStreamDestination();
+  master.connect(msd);
+  bgEl.srcObject = msd.stream;
+
+  const lp = ac.createBiquadFilter();
+  lp.type = 'lowpass'; lp.frequency.value = 3000; lp.Q.value = 0.5;
+  voiceBus = ac.createGain();
+  voiceBus.connect(lp);
+
+  const dry = ac.createGain(); dry.gain.value = 0.7;
+  lp.connect(dry); dry.connect(master);
+
+  const conv = ac.createConvolver();
+  conv.buffer = makeImpulse(ac, 3.5, 2.8);
+  const wet = ac.createGain(); wet.gain.value = 0.5;
+  lp.connect(conv); conv.connect(wet); wet.connect(master);
+}
+
+function playNote(freq, cutoff) {
+  const t = ac.currentTime;
+  const env = ac.createGain();
+  env.gain.setValueAtTime(0, t);
+  env.gain.linearRampToValueAtTime(0.16, t + 0.8);   // 0.8 s attack
+  env.gain.linearRampToValueAtTime(0.11, t + 2.8);
+  env.gain.linearRampToValueAtTime(0, t + 7.8);      // 5 s release
+
+  const f = ac.createBiquadFilter();
+  f.type = 'lowpass'; f.frequency.value = cutoff; f.Q.value = 0.6;
+  env.connect(f); f.connect(voiceBus);
+
+  const o1 = ac.createOscillator(); o1.type = 'sine'; o1.frequency.value = freq;
+  const o2 = ac.createOscillator(); o2.type = 'triangle'; o2.frequency.value = freq * 1.003;
+  const g2 = ac.createGain(); g2.gain.value = 0.35;
+  o1.connect(env); o2.connect(g2); g2.connect(env);
+  o1.start(t); o2.start(t);
+  o1.stop(t + 7.9); o2.stop(t + 7.9);
+  o1.onended = () => { env.disconnect(); f.disconnect(); g2.disconnect(); };
+}
+
+// map real telemetry to notes: speed -> pitch, altitude/coordinate shift -> filter brightness
+function sonify(st, src) {
+  if (!S.audioOn || !ac || st.n === 0) return;
+  const idx = Math.min(NOTES.length - 1, Math.floor(st.spd * NOTES.length));
+  const idx2 = Math.min(NOTES.length - 1, idx + (st.shift > 0.5 ? 4 : 2));
+  const cutoff = 600 + (src === 'WORLD' ? st.alt : st.shift) * 3800;
+  playNote(NOTES[idx], cutoff);
+  playNote(NOTES[idx2], cutoff * 0.7);
+}
+
+function silenceAudio() {
+  S.audioOn = false;
+  if (ac && master) {
+    const now = ac.currentTime;
+    master.gain.cancelScheduledValues(now);
+    master.gain.setValueAtTime(0, now);
+    ac.suspend().catch(() => {});
+  }
+  bgEl.pause();
+  updateMediaPlayback();
+}
+
+async function startAudio() {
+  ensureAudio();
+  try {
+    await ac.resume();
+    await bgEl.play();
+  } catch (e) {
+    S.err = `${t('audioErr')}: ${e.message}`;
+    silenceAudio();
+    ui();
+    return;
+  }
+  const now = ac.currentTime;
+  master.gain.cancelScheduledValues(now);
+  master.gain.setValueAtTime(S.fading ? 0 : S.userVol, now);
+  S.audioOn = true;
+  updateMediaPlayback();
+  ui();
+}
+
+async function toggleAudio() {
+  if (S.audioOn) { silenceAudio(); ui(); return; }
+  await startAudio();
+}
+
+/* ---------- Media Session (lock-screen controller) ---------- */
+function updateMediaMeta() {
+  if (!('mediaSession' in navigator) || typeof MediaMetadata === 'undefined') return;
+  navigator.mediaSession.metadata = new MediaMetadata({
+    title: t('title'),
+    artist: S.source === 'WORLD' ? t('srcWorldLabel') : t('srcTrainsLabel'),
+    album: t('mediaAlbum'),
+    artwork: [{ src: 'icon.svg', sizes: '512x512', type: 'image/svg+xml' }],
+  });
+}
+
+function updateMediaPlayback() {
+  if (!('mediaSession' in navigator)) return;
+  navigator.mediaSession.playbackState = S.audioOn ? 'playing' : 'paused';
+}
+
+function setupMediaSession() {
+  if (!('mediaSession' in navigator)) return;
+  const ms = navigator.mediaSession;
+  ms.setActionHandler('play', () => { if (!S.audioOn) startAudio().then(ui); });
+  ms.setActionHandler('pause', () => { if (S.audioOn) { silenceAudio(); ui(); } });
+  ms.setActionHandler('stop', () => { if (S.audioOn) { silenceAudio(); ui(); } });
+  updateMediaMeta();
+  updateMediaPlayback();
+}
+
+/* ---------- Screen Wake Lock (desk / nightstand mode) ---------- */
+async function setWake(on) {
+  S.wakeWanted = on;
+  if (!on) {
+    const lock = S.wake;
+    S.wake = null;
+    S.wakeOn = false;
+    if (lock) lock.release().catch(() => {});
+    ui();
+    return;
+  }
+  if (!('wakeLock' in navigator)) {
+    S.wakeWanted = false;
+    S.err = t('noWake');
+    ui();
+    return;
+  }
+  try {
+    const lock = await navigator.wakeLock.request('screen');
+    lock.addEventListener('release', () => {
+      // released by the system (e.g. tab hidden); re-acquired on visibilitychange
+      if (S.wake === lock) S.wake = null;
+      S.wakeOn = false;
+      ui();
+    });
+    S.wake = lock;
+    S.wakeOn = true;
+  } catch (e) {
+    S.wakeOn = false;
+    S.err = `${t('wakeErr')}: ${e.message}`;
+  }
+  ui();
+}
+
+document.addEventListener('visibilitychange', async () => {
+  if (document.visibilityState !== 'visible') return;
+  if (S.wakeWanted && !S.wake) await setWake(true);
+  if (S.audioOn) {
+    if (ac && ac.state === 'suspended') ac.resume().catch(() => {});
+    if (bgEl.paused) bgEl.play().catch(() => {});
+  }
+});
+
+/* ---------- sleep timer ---------- */
+function setSleep(min) {
+  S.sleepMin = min;
+  S.sleepEnd = min ? Date.now() + min * 60000 : 0;
+  S.fading = false;
+  S.sleepStopped = false;
+  if (ac && master && S.audioOn) {
+    const now = ac.currentTime;
+    master.gain.cancelScheduledValues(now);
+    master.gain.setValueAtTime(S.userVol, now);
+  }
+  ui();
+}
+
+function sleepTick() {
+  if (!S.sleepEnd) return;
+  const rem = S.sleepEnd - Date.now();
+  if (rem <= 0) { finishSleep(); return; }
+  if (rem <= 30000 && !S.fading) {
+    S.fading = true;
+    if (ac && master && S.audioOn) {
+      const now = ac.currentTime;
+      master.gain.cancelScheduledValues(now);
+      master.gain.setValueAtTime(master.gain.value, now);
+      master.gain.linearRampToValueAtTime(0, now + rem / 1000);
+    }
+  }
+}
+
+function finishSleep() {
+  S.sleepEnd = 0; S.sleepMin = 0; S.fading = false; S.sleepStopped = true;
+  silenceAudio();
+  S.polling = false;
+  clearTimeout(S.pollTimer);
+  if (S.abort) S.abort.abort();
+  freezeMotion();
+  S.net = 'STOPPED';
+  ui();
+}
+
+function sleepLabel() {
+  if (S.sleepEnd) {
+    const s = Math.max(0, Math.ceil((S.sleepEnd - Date.now()) / 1000));
+    const mm = String(Math.floor(s / 60)).padStart(2, '0');
+    const ss = String(s % 60).padStart(2, '0');
+    return `${t('sleepLeft')} ${mm}:${ss}`;
+  }
+  return S.sleepStopped ? t('sleepDone') : '';
+}
+
+/* ---------- UI ---------- */
+function ui() {
+  const st = $('status');
+  st.textContent = t(S.net);
+  st.dataset.net = S.net;
+  $('count').textContent = S.count.toLocaleString(locale());
+  $('drawn').textContent = `· ${t('drawn')} ${S.drawn}`;
+  $('lastTs').textContent = S.lastRecv
+    ? `${fmtTime(S.lastRecv)}${S.serverTs ? ` · ${t('serverTime')} ${fmtTime(S.serverTs)}` : ''}`
+    : t('none');
+  $('err').textContent = S.err ? `${t('errLabel')}: ${S.err}` : '';
+  $('themeBtn').textContent = S.theme === 'dark' ? t('themeDark') : t('themeLight');
+  const ab = $('audioBtn');
+  ab.textContent = S.audioOn ? t('audioOn') : t('audioOff');
+  ab.classList.toggle('on', S.audioOn);
+  const rb = $('rotBtn');
+  rb.textContent = S.rot ? t('rotOn') : t('rotOff');
+  rb.classList.toggle('on', S.rot);
+  const wb = $('wakeBtn');
+  wb.textContent = S.wakeOn ? t('wakeOn') : t('wakeOff');
+  wb.classList.toggle('on', S.wakeOn);
+  document.querySelectorAll('#srcSeg button').forEach(b => b.classList.toggle('on', b.dataset.src === S.source));
+  document.querySelectorAll('#sleepSeg button').forEach(b => b.classList.toggle('on', Number(b.dataset.min) === S.sleepMin));
+  document.querySelectorAll('#langSeg button').forEach(b => b.classList.toggle('on', b.dataset.lang === S.lang));
+  $('sleepCd').textContent = sleepLabel();
+}
+
+function setLang(l) {
+  S.lang = l;
+  document.documentElement.lang = l;
+  document.querySelectorAll('[data-i18n]').forEach(el => { el.textContent = t(el.dataset.i18n); });
+  updateMediaMeta();
+  ui();
+}
+
+function setTheme(name) {
+  S.theme = name;
+  document.body.classList.toggle('light', name === 'light');
+  themeTarget = name === 'light' ? 1 : 0;
+  ui();
+}
+
+/* ---------- service worker ---------- */
+function registerSW() {
+  if (!('serviceWorker' in navigator)) return;
+  if (!/^https?:$/.test(location.protocol)) return;
+  navigator.serviceWorker.register('sw.js').catch(e => console.warn('SW registration failed:', e));
+}
+
+/* ---------- wiring ---------- */
+document.querySelectorAll('#langSeg button').forEach(b => b.addEventListener('click', () => setLang(b.dataset.lang)));
+$('themeBtn').addEventListener('click', () => setTheme(S.theme === 'dark' ? 'light' : 'dark'));
+document.querySelectorAll('#srcSeg button').forEach(b => b.addEventListener('click', () => switchSource(b.dataset.src)));
+$('audioBtn').addEventListener('click', toggleAudio);
+$('vol').addEventListener('input', e => {
+  S.userVol = Number(e.target.value) / 100;
+  if (ac && master && S.audioOn && !S.fading) master.gain.setTargetAtTime(S.userVol, ac.currentTime, 0.05);
+});
+document.querySelectorAll('#sleepSeg button').forEach(b => b.addEventListener('click', () => setSleep(Number(b.dataset.min))));
+$('rotBtn').addEventListener('click', () => { S.rot = !S.rot; ui(); });
+$('wakeBtn').addEventListener('click', () => setWake(!S.wakeWanted));
+
+/* ---------- boot ---------- */
+setLang('ru');
+setTheme('dark');
+applyThemeColors(0);
+setupMediaSession();
+registerSW();
+setInterval(ui, 1000);
+setInterval(sleepTick, 500);
+loadMap();
+S.polling = true;
+poll();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
