@@ -1,0 +1,22 @@
+{
+  "name": "Global Sonification",
+  "short_name": "Sonification",
+  "description": "Real-time global data sonification from live aircraft and rail telemetry.",
+  "id": "./",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#08090c",
+  "theme_color": "#08090c",
+  "lang": "ru",
+  "categories": ["entertainment", "utilities"],
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
